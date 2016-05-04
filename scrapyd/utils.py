@@ -122,3 +122,14 @@ def get_spider_list(project, runner=None, pythonpath=None, version=''):
         project_cache = {version: tmp}
     get_spider_list.cache[project] = project_cache
     return tmp
+
+def get_scrapyd_host(ifname='eth0'):
+  import socket
+  import fcntl
+  import struct
+  s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  return socket.inet_ntoa(fcntl.ioctl(
+      s.fileno(),
+      0x8915,  # SIOCGIFADDR
+      struct.pack('256s', ifname[:15])
+    )[20:24])

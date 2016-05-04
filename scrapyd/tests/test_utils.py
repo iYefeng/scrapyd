@@ -6,7 +6,7 @@ from twisted.trial import unittest
 
 from scrapy.utils.test import get_pythonpath
 from scrapyd.interfaces import IEggStorage
-from scrapyd.utils import get_crawl_args, get_spider_list, UtilsCache
+from scrapyd.utils import get_crawl_args, get_spider_list, UtilsCache, get_scrapyd_host
 from scrapyd import get_application
 
 def get_pythonpath_scrapyd():
@@ -85,3 +85,9 @@ class GetSpiderListTest(unittest.TestCase):
         UtilsCache.invalid_cache('mybot')
         spiders = get_spider_list('mybot', pythonpath=get_pythonpath_scrapyd())
         self.assertEqual(sorted(spiders), ['spider1', 'spider2'])
+
+    def test_get_scrapyd_host(self):
+        ip = get_scrapyd_host()
+        print ip
+        self.assertEqual(ip, '192.168.238.200')
+

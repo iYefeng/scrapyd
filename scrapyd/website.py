@@ -3,13 +3,15 @@ from datetime import datetime
 import socket
 
 from twisted.web import resource, static
-from twisted.application.service import IServiceCollection
+from twisted.application.service import IServiceCollection, IService
 
 from scrapy.utils.misc import load_object
 
 from .interfaces import IPoller, IEggStorage, ISpiderScheduler
 
 from urlparse import urlparse
+from .utils import get_scrapyd_host
+from .zkstore import JsonZookeeperStore
 
 class Root(resource.Resource):
 
@@ -33,7 +35,17 @@ class Root(resource.Resource):
           servCls = load_object(servClsName)
           self.putChild(servName, servCls(self))
         self.update_projects()
+        self.register_zookeeper(config, app)
+        
+  
+    def register_zookeeper(self, config, app):
+        http_port = config.getint('http_port', 6800)
+        zk_address = config.get("zookeeper", "127.0.0.1:32181")
+        self.zkregister = JsonZookeeperStore(database=IService(app).name, table="targets", zkhost=zk_address)
+        target_host_port = get_scrapyd_host() + ":" + str(http_port)
+        self.zkregister.create(target_host_port, {"url":target_host_port}, 1)
 
+    
     def update_projects(self):
         self.poller.update_projects()
         self.scheduler.update_projects()

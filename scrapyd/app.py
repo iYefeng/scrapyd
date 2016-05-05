@@ -11,7 +11,6 @@ from .scheduler import SpiderScheduler
 from .poller import QueuePoller
 from .environ import Environment
 from .config import Config
-from .utils import get_scrapyd_host
 
 def application(config):
     app = Application("Scrapyd")
@@ -44,7 +43,5 @@ def application(config):
     launcher.setServiceParent(app)
     timer.setServiceParent(app)
     webservice.setServiceParent(app)
-
-    print get_scrapyd_host()
 
     return app

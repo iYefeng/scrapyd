@@ -1,172 +1,113 @@
-import sqlite3
-import cPickle
-import json
-from UserDict import DictMixin
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import logging
+import os
+import simplejson as json
 
+from zkclient import ZKClient, zookeeper, watchmethod
 
-class SqliteDict(DictMixin):
-    """SQLite-backed dictionary"""
+logging.basicConfig(
+    level = logging.DEBUG,
+    format = "[%(asctime)s] %(levelname)-8s %(message)s"
+)
+log = logging
 
-    def __init__(self, database=None, table="dict"):
-        self.database = database or ':memory:'
-        self.table = table
-        # about check_same_thread: http://twistedmatrix.com/trac/ticket/4040
-        self.conn = sqlite3.connect(self.database, check_same_thread=False)
-        q = "create table if not exists %s (key text primary key, value blob)" \
-            % table
-        self.conn.execute(q)
+class ZookeeperStore(object):
+  
+  TIMEOUT = 1000
 
-    def __getitem__(self, key):
-        key = self.encode(key)
-        q = "select value from %s where key=?" % self.table
-        value = self.conn.execute(q, (key,)).fetchone()
-        if value:
-            return self.decode(value[0])
-        raise KeyError(key)
+  def __init__(self, verbose = True, database='test', table='targets', zkhost='127.0.0.1:32181'):
+    self.VERBOSE = verbose
+    self.path = None
+    self.ZK_HOST = zkhost
+    self.database = "/" + database
+    self.table = os.path.join(self.database, table)
 
-    def __setitem__(self, key, value):
-        key, value = self.encode(key), self.encode(value)
-        q = "insert or replace into %s (key, value) values (?,?)" % self.table
-        self.conn.execute(q, (key, value))
-        self.conn.commit()
+    self.zk = ZKClient(self.ZK_HOST, timeout = self.TIMEOUT)
+    self.say("login ok")
+    self._init_zk()
 
-    def __delitem__(self, key):
-        key = self.encode(key)
-        q = "delete from %s where key=?" % self.table
-        self.conn.execute(q, (key,))
-        self.conn.commit()
+  def __del__(self):
+    self.zk.close()
 
-    def iterkeys(self):
-        q = "select key from %s" % self.table
-        return (self.decode(x[0]) for x in self.conn.execute(q))
+  def _init_zk(self):
+    nodes = (self.database, self.table)
+    for node in nodes:
+      if not self.zk.exists(node):
+        try:
+          self.zk.create(node, "")
+        except:
+          pass
 
-    def keys(self):
-        return list(self.iterkeys())
+  def create(self, path, msg, flags=0):
+    msg = self.encode(msg)
+    self.path = os.path.join(self.table, path)
+    nodes = self.path.split("/")
+    # FIXME
+    for i in range(4,len(nodes)):
+      node = "/".join(nodes[:i])
+      if not self.zk.exists(node):
+        try:
+          self.zk.create(node, "")
+        except:
+          pass
+    if not self.zk.exists(self.path):
+      self.path = self.zk.create(self.path, msg, flags=flags)
+    else:
+      self.zk.set(self.path, msg)
+    #self.path = os.path.basename(self.path)
+    self.say("register ok! I'm %s" % self.path)
+  
+  def get_children(self, path=""):
+    if not path:
+      path = self.table
+    children = self.zk.get_children(path)
+    return children
 
-    def itervalues(self):
-        q = "select value from %s" % self.table
-        return (self.decode(x[0]) for x in self.conn.execute(q))
+  def get(self, node):
+    msg = self.zk.get(node)
+    return msg
 
-    def values(self):
-        return list(self.itervalues())
+  def decode(self, obj):
+    return obj
 
-    def iteritems(self):
-        q = "select key, value from %s" % self.table
-        return ((self.decode(x[0]), self.decode(x[1])) for x in self.conn.execute(q))
+  def encode(self, msg):
+    return msg
 
-    def items(self):
-        return list(self.iteritems())
+  def say(self, msg):
+    if self.VERBOSE:
+      if self.path:
+        log.info(msg)
+      else:
+        log.info(msg)
 
-    def encode(self, obj):
-        return obj
+class JsonZookeeperStore(ZookeeperStore):
 
-    def decode(self, text):
-        return text
+  def decode(self, msg):
+    if msg:
+      return json.loads(msg)
+    else:
+      return {}
+  
+  def encode(self, obj):
+    if obj:
+      return json.dumps(obj)
+    else:
+      return ""
 
+if __name__ == "__main__":
+  zks = JsonZookeeperStore(database="webSpider", table="targets")
+  zks.create("127.0.0.1:9000", {"url":"127.0.0.1:9000"}, 1)
+  zks.create("127.0.0.1:9001", {"url":"127.0.0.1:9001"}, 1)
+  children = zks.get_children()
+  for child in children:
+    print zks.decode(zks.get(zks.table + "/" + child)[0])["url"]
 
-class PickleSqliteDict(SqliteDict):
-
-    def encode(self, obj):
-        return buffer(cPickle.dumps(obj, protocol=2))
-
-    def decode(self, text):
-        return cPickle.loads(str(text))
-
-
-class JsonSqliteDict(SqliteDict):
-
-    def encode(self, obj):
-        return json.dumps(obj)
-
-    def decode(self, text):
-        return json.loads(text)
-
-
-
-class SqlitePriorityQueue(object):
-    """SQLite priority queue. It relies on SQLite concurrency support for
-    providing atomic inter-process operations.
-    """
-
-    def __init__(self, database=None, table="queue"):
-        self.database = database or ':memory:'
-        self.table = table
-        # about check_same_thread: http://twistedmatrix.com/trac/ticket/4040
-        self.conn = sqlite3.connect(self.database, check_same_thread=False)
-        q = "create table if not exists %s (id integer primary key, " \
-            "priority real key, message blob)" % table
-        self.conn.execute(q)
-
-    def put(self, message, priority=0.0):
-        args = (priority, self.encode(message))
-        q = "insert into %s (priority, message) values (?,?)" % self.table
-        self.conn.execute(q, args)
-        self.conn.commit()
-
-    def pop(self):
-        q = "select id, message from %s order by priority desc limit 1" \
-            % self.table
-        idmsg = self.conn.execute(q).fetchone()
-        if idmsg is None:
-            return
-        id, msg = idmsg
-        q = "delete from %s where id=?" % self.table
-        c = self.conn.execute(q, (id,))
-        if not c.rowcount: # record vanished, so let's try again
-            self.conn.rollback()
-            return self.pop()
-        self.conn.commit()
-        return self.decode(msg)
-
-    def remove(self, func):
-        q = "select id, message from %s" % self.table
-        n = 0
-        for id, msg in self.conn.execute(q):
-            if func(self.decode(msg)):
-                q = "delete from %s where id=?" % self.table
-                c = self.conn.execute(q, (id,))
-                if not c.rowcount: # record vanished, so let's try again
-                    self.conn.rollback()
-                    return self.remove(func)
-                n += 1
-        self.conn.commit()
-        return n
-
-    def clear(self):
-        self.conn.execute("delete from %s" % self.table)
-        self.conn.commit()
-
-    def __len__(self):
-        q = "select count(*) from %s" % self.table
-        return self.conn.execute(q).fetchone()[0]
-
-    def __iter__(self):
-        q = "select message, priority from %s order by priority desc" % \
-            self.table
-        return ((self.decode(x), y) for x, y in self.conn.execute(q))
-
-    def encode(self, obj):
-        return obj
-
-    def decode(self, text):
-        return text
-
-
-class PickleSqlitePriorityQueue(SqlitePriorityQueue):
-
-    def encode(self, obj):
-        return buffer(cPickle.dumps(obj, protocol=2))
-
-    def decode(self, text):
-        return cPickle.loads(str(text))
-
-
-class JsonSqlitePriorityQueue(SqlitePriorityQueue):
-
-    def encode(self, obj):
-        return json.dumps(obj)
-
-    def decode(self, text):
-        return json.loads(text)
-
-
+  zkeggs = JsonZookeeperStore(database="webSpider", table="eggs")
+  zkeggs.create("project1/v1.0", {"data":"hello1"}, 0)
+  zkeggs.create("project1/v2.0", {"data":"hello2"}, 0)
+  zkeggs.create("project2/v2.0", {"data":"hello2"}, 0)
+  children = zkeggs.get_children()
+  for child in children:
+    data = zkeggs.get_children(zkeggs.table + "/" + child)
+    print data
